@@ -7,6 +7,8 @@ v4.27.0
   ``relevance`` no longer considers an error's position amongst its siblings.
   When subschemas fail equally deeply, the one which produced fewer errors is now preferred (#1002).
 * Errors produced by a ``false`` subschema now have the correct ``path`` and ``schema_path``, rather than empty ones.
+* Non-boolean ``unevaluatedProperties`` subschemas now attach a per-property ``context`` to the aggregate error, locating each rejected property's instance path and the failing subschema, matching the granularity of ``additionalProperties`` errors.
+  The boolean ``false`` form and schemas without the keyword produce unchanged errors.
 * Accessing an index with no errors on an ``ErrorTree`` no longer causes that index to appear in the tree (#1328).
   Subtrees also properly propagate lookup errors which were previously missing when accessing indices not in the subtree.
 

@@ -418,17 +418,20 @@ def unevaluatedProperties(validator, unevaluatedProperties, instance, schema):
         schema,
     )
     unevaluated_keys = []
+    subschema_errors = []
     for property in instance:
         if property not in evaluated_keys:
-            for _ in validator.descend(
-                instance[property],
-                unevaluatedProperties,
-                path=property,
-                schema_path=property,
-            ):
-                # FIXME: Include context for each unevaluated property
-                #        indicating why it's invalid under the subschema.
-                unevaluated_keys.append(property)  # noqa: PERF401
+            property_errors = list(
+                validator.descend(
+                    instance[property],
+                    unevaluatedProperties,
+                    path=property,
+                ),
+            )
+            if property_errors:
+                unevaluated_keys.append(property)
+                if unevaluatedProperties is not False:
+                    subschema_errors.extend(property_errors)
 
     if unevaluated_keys:
         if unevaluatedProperties is False:
@@ -440,7 +443,10 @@ def unevaluatedProperties(validator, unevaluatedProperties, instance, schema):
                 "Unevaluated properties are not valid under "
                 "the given schema (%s %s unevaluated and invalid)"
             )
-            yield ValidationError(error % extras_msg(unevaluated_keys))
+            yield ValidationError(
+                error % extras_msg(unevaluated_keys),
+                context=subschema_errors,
+            )
 
 
 def prefixItems(validator, prefixItems, instance, schema):

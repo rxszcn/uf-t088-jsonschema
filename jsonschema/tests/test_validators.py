@@ -1649,6 +1649,245 @@ class TestValidationErrorDetails(TestCase):
             ),
         )
 
+    def unevaluated_properties_error(self, cls, instance, schema):
+        (error,) = list(cls(schema).iter_errors(instance))
+        self.assertEqual(error.validator, "unevaluatedProperties")
+        return error
+
+    def test_unevaluated_properties_subschema_single_property_context(self):
+        schema = {
+            "properties": {"foo": {"type": "string"}},
+            "unevaluatedProperties": {"const": 12},
+        }
+        instance = {"foo": "foo", "bar": "bar"}
+        for cls in (
+            validators.Draft202012Validator,
+            validators.Draft201909Validator,
+        ):
+            with self.subTest(cls=cls.__name__):
+                error = self.unevaluated_properties_error(
+                    cls,
+                    instance,
+                    schema,
+                )
+                self.assertEqual(
+                    error.message,
+                    "Unevaluated properties are not valid under the given "
+                    "schema ('bar' was unevaluated and invalid)",
+                )
+
+                (context,) = error.context
+                self.assertIs(context.parent, error)
+                self.assertEqual(context.validator, "const")
+                self.assertEqual(context.validator_value, 12)
+                self.assertEqual(context.instance, "bar")
+                self.assertEqual(context.path, deque(["bar"]))
+                self.assertEqual(context.relative_path, deque(["bar"]))
+                self.assertEqual(context.absolute_path, deque(["bar"]))
+                self.assertEqual(context.json_path, "$.bar")
+                self.assertEqual(context.schema_path, deque(["const"]))
+                self.assertEqual(
+                    context.relative_schema_path,
+                    deque(["const"]),
+                )
+                self.assertEqual(
+                    context.absolute_schema_path,
+                    deque(["unevaluatedProperties", "const"]),
+                )
+                self.assertEqual(context.schema, {"const": 12})
+                self.assertFalse(context.context)
+
+    def test_unevaluated_properties_multiple_properties_context(self):
+        schema = {
+            "properties": {"foo": {"type": "string"}},
+            "unevaluatedProperties": {"const": 12},
+        }
+        instance = {"foo": "foo", "bar": "bar", "baz": "wrong", "qux": 37}
+        for cls in (
+            validators.Draft202012Validator,
+            validators.Draft201909Validator,
+        ):
+            with self.subTest(cls=cls.__name__):
+                error = self.unevaluated_properties_error(
+                    cls,
+                    instance,
+                    schema,
+                )
+                self.assertEqual(
+                    error.message,
+                    "Unevaluated properties are not valid under the given "
+                    "schema ('bar', 'baz', 'qux' were unevaluated and "
+                    "invalid)",
+                )
+
+                # The aggregate structure stays traversable: one context
+                # entry per rejected property, in instance order.
+                self.assertEqual(len(error.context), 3)
+                details = [
+                    (
+                        list(each.absolute_path),
+                        list(each.absolute_schema_path),
+                        each.instance,
+                        each.validator,
+                    )
+                    for each in error.context
+                ]
+                self.assertEqual(
+                    details,
+                    [
+                        (
+                            ["bar"],
+                            ["unevaluatedProperties", "const"],
+                            "bar",
+                            "const",
+                        ),
+                        (
+                            ["baz"],
+                            ["unevaluatedProperties", "const"],
+                            "wrong",
+                            "const",
+                        ),
+                        (
+                            ["qux"],
+                            ["unevaluatedProperties", "const"],
+                            37,
+                            "const",
+                        ),
+                    ],
+                )
+                for each in error.context:
+                    self.assertIs(each.parent, error)
+                    self.assertEqual(
+                        each.path,
+                        deque([each.absolute_path[-1]]),
+                    )
+
+    def test_unevaluated_properties_subschema_nested_container_context(self):
+        schema = {
+            "type": "array",
+            "items": {
+                "properties": {"foo": {"type": "string"}},
+                "unevaluatedProperties": {"const": 12},
+            },
+        }
+        instance = [
+            {"foo": "x", "bar": "y", "baz": 1},
+            {"foo": "z", "qux": "nope"},
+        ]
+        for cls in (
+            validators.Draft202012Validator,
+            validators.Draft201909Validator,
+        ):
+            with self.subTest(cls=cls.__name__):
+                first, second = sorted_errors(
+                    cls(schema).iter_errors(instance),
+                )
+
+                self.assertEqual(first.absolute_path, deque([0]))
+                self.assertEqual(
+                    [list(each.absolute_path) for each in first.context],
+                    [[0, "bar"], [0, "baz"]],
+                )
+                self.assertEqual(
+                    [
+                        list(each.absolute_schema_path)
+                        for each in first.context
+                    ],
+                    [
+                        ["items", "unevaluatedProperties", "const"],
+                        ["items", "unevaluatedProperties", "const"],
+                    ],
+                )
+                self.assertEqual(
+                    [each.instance for each in first.context],
+                    ["y", 1],
+                )
+
+                self.assertEqual(second.absolute_path, deque([1]))
+                (context,) = second.context
+                self.assertEqual(
+                    list(context.absolute_path),
+                    [1, "qux"],
+                )
+                self.assertEqual(
+                    list(context.absolute_schema_path),
+                    ["items", "unevaluatedProperties", "const"],
+                )
+                self.assertEqual(context.instance, "nope")
+                self.assertEqual(context.json_path, "$[1].qux")
+
+    def test_unevaluated_properties_false_has_no_context(self):
+        # The boolean form keeps its pre-existing error product verbatim,
+        # including an empty context.
+        schema = {"type": "object", "unevaluatedProperties": False}
+        instance = {"foo": "foo", "bar": "bar"}
+        for cls in (
+            validators.Draft202012Validator,
+            validators.Draft201909Validator,
+        ):
+            with self.subTest(cls=cls.__name__):
+                error = self.unevaluated_properties_error(
+                    cls,
+                    instance,
+                    schema,
+                )
+                self.assertEqual(
+                    error.message,
+                    "Unevaluated properties are not allowed "
+                    "('bar', 'foo' were unexpected)",
+                )
+                self.assertEqual(error.context, [])
+
+    def test_unevaluated_properties_without_keyword_is_unchanged(self):
+        # A schema without the keyword produces no unevaluatedProperties
+        # errors at all.
+        schema = {"properties": {"foo": {"type": "string"}}}
+        instance = {"foo": "foo", "bar": "bar"}
+        for cls in (
+            validators.Draft202012Validator,
+            validators.Draft201909Validator,
+        ):
+            with self.subTest(cls=cls.__name__):
+                self.assertFalse(list(cls(schema).iter_errors(instance)))
+
+    def test_unevaluated_properties_matches_additional_properties(self):
+        # The per-field context must reach the same granularity as the
+        # additionalProperties family: field path plus subschema location.
+        additional_schema = {
+            "properties": {"foo": {"type": "string"}},
+            "additionalProperties": {"const": 12},
+        }
+        unevaluated_schema = {
+            "properties": {"foo": {"type": "string"}},
+            "unevaluatedProperties": {"const": 12},
+        }
+        instance = {"foo": "foo", "bar": "bar", "baz": "wrong"}
+        for cls in (
+            validators.Draft202012Validator,
+            validators.Draft201909Validator,
+        ):
+            with self.subTest(cls=cls.__name__):
+                additional = sorted_errors(
+                    cls(additional_schema).iter_errors(instance),
+                )
+                (unevaluated,) = list(
+                    cls(unevaluated_schema).iter_errors(instance),
+                )
+                unevaluated_context = sorted_errors(unevaluated.context)
+
+                self.assertEqual(len(additional), len(unevaluated_context))
+                for left, right in zip(additional, unevaluated_context):
+                    self.assertEqual(left.absolute_path, right.absolute_path)
+                    self.assertEqual(left.instance, right.instance)
+                    self.assertEqual(left.validator, right.validator)
+                    self.assertEqual(
+                        # Both locate the failing subschema via .../const;
+                        # only the leading keyword name differs.
+                        list(left.absolute_schema_path)[1:],
+                        list(right.absolute_schema_path)[1:],
+                    )
+                    self.assertIs(right.parent, unevaluated)
+
 
 class MetaSchemaTestsMixin:
     # TODO: These all belong upstream
